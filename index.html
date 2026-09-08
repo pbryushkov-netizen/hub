@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Штаб</title>
+<style>
+  :root{
+    --bg:#0E1418; --panel:#151F26; --panel2:#1B272F; --line:#25343D;
+    --ink:#DEE7EC; --dim:#7E8F99; --ok:#4FD1A5; --warn:#E8A13A; --bad:#E2604A;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
+       font-size:15px;line-height:1.45;-webkit-text-size-adjust:100%}
+  .wrap{max-width:760px;margin:0 auto;padding:14px 14px 40px}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:4px 0 16px}
+  h1{font-size:19px;font-weight:650;margin:0;letter-spacing:-.01em}
+  .tick{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .node{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+        padding:14px;margin-bottom:14px}
+  .nodetop{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+  .nm{font-size:17px;font-weight:650;margin:0}
+  .age{font-size:26px;font-weight:600;line-height:1.05;font-variant-numeric:tabular-nums;text-align:right}
+  .age small{display:block;font-size:11px;font-weight:400;color:var(--dim);letter-spacing:.01em}
+  .fresh{color:var(--ok)} .stale{color:var(--warn)} .dead{color:var(--bad)}
+  .facts{margin:12px 0 0;display:grid;grid-template-columns:auto 1fr;gap:5px 14px;font-size:13.5px}
+  .facts dt{color:var(--dim)}
+  .facts dd{margin:0;font-family:var(--mono);font-size:12.5px;word-break:break-all}
+  .btns{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}
+  button{font:inherit;font-size:13px;color:var(--ink);background:var(--panel2);
+         border:1px solid var(--line);border-radius:9px;padding:8px 12px;cursor:pointer}
+  button:hover{background:#22323B}
+  button:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+  button:disabled{opacity:.45;cursor:default}
+  .free{display:flex;gap:7px;margin-top:9px}
+  .free input{flex:1;min-width:0;font-family:var(--mono);font-size:12.5px;color:var(--ink);
+              background:#0F171C;border:1px solid var(--line);border-radius:9px;padding:8px 10px}
+  .free input:focus{outline:2px solid var(--ok);outline-offset:1px}
+  pre{margin:12px 0 0;padding:11px;background:#0C1216;border:1px solid var(--line);
+      border-radius:10px;font-family:var(--mono);font-size:12px;line-height:1.4;
+      white-space:pre-wrap;word-break:break-word;max-height:300px;overflow:auto}
+  .lbl{font-size:11.5px;color:var(--dim);margin:12px 0 -4px}
+  .err{background:#2A1714;border-color:#4A2620;color:#F0B4A8}
+  .gate{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .gate p{color:var(--dim);font-size:13.5px;margin:0 0 12px}
+  .gate input{width:100%;font-family:var(--mono);font-size:13px;color:var(--ink);
+              background:#0F171C;border:1px solid var(--line);border-radius:9px;padding:10px}
+  .gate button{margin-top:10px;width:100%;padding:11px}
+  footer{margin-top:18px;font-size:11.5px;color:var(--dim);display:flex;justify-content:space-between;gap:10px}
+  a{color:var(--dim)}
+  @media (prefers-reduced-motion:no-preference){
+    .pulse{animation:p 1s ease}
+    @keyframes p{from{background:#22323B}to{background:var(--panel)}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Штаб</h1>
+    <div class="tick" id="tick"></div>
+  </header>
+  <div id="gate" class="gate" hidden>
+    <p>Вставь OAuth-токен Яндекс.Диска. Он сохранится только в этом браузере.</p>
+    <input id="tok" type="password" placeholder="y0_..." autocomplete="off" spellcheck="false">
+    <button id="save">Подключиться</button>
+  </div>
+  <div id="board"></div>
+  <div id="fail"></div>
+  <footer>
+    <span id="stamp"></span>
+    <a href="#" id="forget">Забыть токен</a>
+  </footer>
+</div>
+<script>
+const API = "https://cloud-api.yandex.net/v1/disk/resources";
+const HUB = "app:/hub";
+const NODES = [
+  {id:"r1", name:"Дача"},
+  {id:"r2", name:"Алепино"}
+];
+const ACTIONS = [
+  {label:"Статус",      cmd:"vpnctl status",  t:60},
+  {label:"Диагностика", cmd:"vpnctl doctor",  t:180},
+  {label:"Автоподбор",  cmd:"vpnctl auto",    t:300},
+  {label:"Скорость",    cmd:"vpn-bench2",     t:180},
+  {label:"Аптайм",      cmd:"vpn-uptime",     t:60}
+];
+
+let token = "";
+try { token = localStorage.getItem("hubtok") || ""; } catch(e) { token = ""; }
+const seen = {};      // id -> {txt, at}  когда статус в последний раз менялся
+const outs = {};      // id -> последний показанный вывод
+const waiting = {};   // id -> id отправленной команды
+let turbo = 0;
+
+const $ = s => document.querySelector(s);
+const esc = s => (s||"").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+
+function ask(){ $("#gate").hidden = false; $("#board").innerHTML = ""; }
+function api(method, path, body){
+  const u = API + "?path=" + encodeURIComponent(path) +
+            (method === "GET" ? "&fields=_embedded.items.name,_embedded.items.custom_properties,custom_properties&limit=20" : "");
+  const o = {method, headers:{Authorization:"OAuth " + token}};
+  if (body){ o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
+  return fetch(u, o).then(r => {
+    if (r.status === 401) throw new Error("Токен не принят. Проверь его или получи заново.");
+    if (!r.ok) throw new Error("Диск ответил " + r.status);
+    return r.status === 204 ? {} : r.json();
+  });
+}
+
+function pick(txt, key){
+  const m = (txt||"").split("\n").find(l => l.trim().toLowerCase().startsWith(key));
+  return m ? m.split(":").slice(1).join(":").trim() : "—";
+}
+function ago(sec){
+  if (sec < 60) return Math.max(0, Math.round(sec)) + " с";
+  if (sec < 3600) return Math.round(sec/60) + " мин";
+  return Math.round(sec/3600) + " ч";
+}
+function upfmt(s){
+  if (!s) return "—";
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return (d ? d + " д " : "") + (h ? h + " ч " : "") + m + " мин";
+}
+
+function render(items){
+  const map = {};
+  items.forEach(i => map[i.name] = i.custom_properties || {});
+  const now = Date.now();
+  $("#board").innerHTML = NODES.map(n => {
+    const st = map[n.id + "-status"] || {};
+    const out = map[n.id + "-out"] || {};
+    const txt = st.txt || "";
+    if (txt && (!seen[n.id] || seen[n.id].txt !== txt)) seen[n.id] = {txt, at: now};
+    const age = seen[n.id] ? (now - seen[n.id].at)/1000 : null;
+    const cls = age === null ? "" : age < 75 ? "fresh" : age < 300 ? "stale" : "dead";
+    const tun = pick(txt, "туннель");
+    const answered = waiting[n.id] && String(out.id) === String(waiting[n.id]);
+    if (answered) delete waiting[n.id];
+    const body = out.txt ? out.txt : "";
+    outs[n.id] = body ? {txt: body, rc: out.rc, t: out.t, id: out.id} : outs[n.id];
+    const o = outs[n.id];
+    return `<section class="node" id="n-${n.id}">
+      <div class="nodetop">
+        <div>
+          <p class="nm">${n.name}</p>
+          <div class="tick">часы роутера: ${esc(st.t || "нет данных")}</div>
+        </div>
+        <div class="age ${cls}">${age === null ? "—" : ago(age)}<small>с обновления</small></div>
+      </div>
+      <dl class="facts">
+        <dt>Туннель</dt><dd>${esc(tun)}</dd>
+        <dt>Конфиг</dt><dd>${esc(pick(txt, "активный конфиг"))}</dd>
+        <dt>Канал</dt><dd>${esc(pick(txt, "канал"))}</dd>
+        <dt>Неудач</dt><dd>${esc(pick(txt, "неудач"))}</dd>
+        <dt>Правила</dt><dd>${esc(pick(txt, "правила"))}</dd>
+        <dt>Аптайм</dt><dd>${upfmt(st.up)}</dd>
+      </dl>
+      <div class="btns">
+        ${ACTIONS.map((a,i) => `<button data-n="${n.id}" data-a="${i}">${a.label}</button>`).join("")}
+      </div>
+      <div class="free">
+        <input id="f-${n.id}" placeholder="своя команда" autocomplete="off" spellcheck="false">
+        <button data-n="${n.id}" data-free="1">Выполнить</button>
+      </div>
+      ${waiting[n.id] ? `<p class="lbl">Команда отправлена, жду ответа…</p>` : ""}
+      ${o ? `<p class="lbl">Ответ ${esc(o.t || "")}${o.rc ? " · код " + o.rc : ""}</p>
+             <pre${o.rc ? ' class="err"' : ""}>${esc(o.txt)}</pre>` : ""}
+      <p class="lbl">Состояние</p>
+      <pre>${esc(txt || "статус ещё не пришёл")}</pre>
+    </section>`;
+  }).join("");
+  $("#board").querySelectorAll("button[data-a]").forEach(b =>
+    b.onclick = () => send(b.dataset.n, ACTIONS[+b.dataset.a].cmd, ACTIONS[+b.dataset.a].t));
+  $("#board").querySelectorAll("button[data-free]").forEach(b =>
+    b.onclick = () => {
+      const v = $("#f-" + b.dataset.n).value.trim();
+      if (v) send(b.dataset.n, v, 180);
+    });
+}
+
+function send(node, cmd, t){
+  const id = Date.now();
+  waiting[node] = id;
+  api("PATCH", HUB + "/" + node + "-cmd", {custom_properties:{id, cmd, t}})
+    .then(() => { turbo = Date.now() + 240000; tick(); })
+    .catch(e => { delete waiting[node]; showFail(e); });
+}
+
+function showFail(e){
+  const cors = (e instanceof TypeError);
+  $("#fail").innerHTML = `<pre class="err">${esc(cors
+    ? "Браузер заблокировал запрос к Диску. Так бывает, когда страница открыта как локальный файл — положи её на любой https-адрес."
+    : e.message)}</pre>`;
+}
+
+function load(){
+  if (!token) return ask();
+  api("GET", HUB).then(d => {
+    $("#gate").hidden = true;
+    $("#fail").innerHTML = "";
+    render((d._embedded && d._embedded.items) || []);
+    $("#stamp").textContent = "связь с Диском: " + new Date().toLocaleTimeString("ru-RU");
+  }).catch(showFail);
+}
+
+function tick(){
+  const fast = Date.now() < turbo || Object.keys(waiting).length;
+  $("#tick").textContent = fast ? "опрос 2 с" : "опрос 5 с";
+  load();
+  clearTimeout(tick._t);
+  tick._t = setTimeout(tick, fast ? 2000 : 5000);
+}
+
+$("#save").onclick = () => {
+  const v = $("#tok").value.trim();
+  if (!v) return;
+  token = v;
+  try { localStorage.setItem("hubtok", v); } catch(e) {}
+  tick();
+};
+$("#forget").onclick = ev => {
+  ev.preventDefault();
+  token = "";
+  try { localStorage.removeItem("hubtok"); } catch(e) {}
+  ask();
+};
+tick();
+</script>
+</body>
+</html>
