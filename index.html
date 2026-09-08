@@ -62,7 +62,7 @@
   .st{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:10px 11px;min-width:0}
   .st b{display:block;font-size:11.5px;color:var(--mute);font-weight:600;margin-bottom:3px}
   .st span{display:block;font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .st span.mono{font-family:var(--mono);font-weight:500;font-size:12px}
+  .st span.mono{font-family:var(--mono);font-weight:500;font-size:11.5px;white-space:normal;word-break:break-all;line-height:1.3}
   .st.warn span{color:var(--warn)}
 
   .acts{display:flex;gap:8px;overflow-x:auto;margin:14px -16px 0;padding:2px 16px 6px;scrollbar-width:none}
@@ -190,7 +190,7 @@ const upfmt = s => { if(!s) return "—"; const d=Math.floor(s/86400),h=Math.flo
 
 function api(method, path, body){
   const u = API + "?path=" + encodeURIComponent(path) +
-    (method === "GET" ? "&fields=_embedded.items.name,_embedded.items.custom_properties&limit=20" : "");
+    (method === "GET" ? "&fields=_embedded.items.name,_embedded.items.modified,_embedded.items.custom_properties&limit=20" : "");
   const o = {method, headers:{Authorization:"OAuth " + token}};
   if (body){ o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
   return fetch(u, o).then(r => {
@@ -238,12 +238,15 @@ function build(){
 }
 
 function paint(items){
-  const map = {}; items.forEach(i => map[i.name] = i.custom_properties || {});
+  const map = {}, mod = {};
+  items.forEach(i => { map[i.name] = i.custom_properties || {}; mod[i.name] = i.modified ? Date.parse(i.modified) : null; });
   const now = Date.now();
   NODES.forEach(n => {
     const r = refs[n.id], st = map[n.id+"-status"] || {}, out = map[n.id+"-out"] || {};
     const txt = st.txt || "";
-    if (txt && (!seen[n.id] || seen[n.id].txt !== txt)) seen[n.id] = {txt, at: now};
+    const tR = parseT(st.t);
+    const prev = seen[n.id];
+    seen[n.id] = { txt, t: tR, mod: mod[n.id+"-status"], at: (prev && prev.txt === txt && prev.t === tR) ? prev.at : now };
     const tun = line(txt, "туннель");
     const okT = /^ok/i.test(tun);
     r.tun.className = "tun " + (tun ? (okT ? "ok" : "bad") : "");
@@ -253,7 +256,7 @@ function paint(items){
     const nf = line(txt, "неудач"); r.nfv.textContent = nf || "—"; r.nf.classList.toggle("warn", nf !== "" && nf !== "0");
     r.up.textContent = upfmt(st.up);
     r.raw.textContent = txt || "статус ещё не пришёл";
-    r.clock.textContent = st.t ? "часы роутера: " + st.t : "";
+    r.clock.textContent = st.t ? "последний отчёт " + st.t.slice(11) : "";
     if (out.txt){ outs[n.id] = out; }
     if (waiting[n.id] && String(out.id) === String(waiting[n.id].id)){
       delete waiting[n.id]; setBusy(n.id, false);
@@ -263,24 +266,45 @@ function paint(items){
   tickAges();
 }
 
+function parseT(s){
+  const m = /^(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)$/.exec(s || "");
+  return m ? new Date(+m[1], m[2]-1, +m[3], +m[4], +m[5], +m[6]).getTime() : null;
+}
+function ageOf(s, now){
+  if (!s || !s.txt) return null;
+  const aT = s.t ? (now - s.t)/1000 : null;          // по часам роутера
+  const aM = s.mod ? (now - s.mod)/1000 : null;       // по метке Диска
+  const aO = (now - s.at)/1000;                       // с момента, когда данные последний раз менялись здесь
+  let a;
+  if (aT !== null && aT >= -180) a = aM !== null ? Math.min(aT, aM) : aT;
+  else if (aM !== null) a = aM;                       // часы роутера убежали вперёд
+  else a = aO;
+  if (a > STALE && aO < 90) a = aO;                   // данные только что менялись — часы врут, не паникуем
+  const skew = aT !== null && (aT < -180 || (aM !== null && aT - aM > 600));
+  return {a: Math.max(0, a), skew};
+}
+
 function tickAges(){
   const now = Date.now(); const bad = [];
   NODES.forEach(n => {
     const r = refs[n.id]; if (!r) return;
     const s = seen[n.id];
-    if (!s){ r.age.textContent = "—"; r.fg.style.stroke = "var(--faint)"; r.fg.style.strokeDashoffset = C; return; }
-    const a = (now - s.at)/1000;
+    const g = ageOf(s, now);
+    if (!g){ r.age.textContent = "—"; r.fg.style.stroke = "var(--faint)"; r.fg.style.strokeDashoffset = C; return; }
+    const a = g.a;
     r.age.textContent = ago(a);
     const col = a < FRESH ? "var(--ok)" : a < STALE ? "var(--warn)" : "var(--bad)";
     r.fg.style.stroke = col;
     r.fg.style.strokeDashoffset = a < FRESH ? C * (a / FRESH) : a < STALE ? C * 0.92 : C;
+    if (g.skew) r.clock.textContent = "часы роутера сбиты, последний отчёт " + (s.t ? new Date(s.t).toLocaleTimeString("ru-RU") : "—");
     if (a >= STALE) bad.push(n.name + " молчит " + ago(a));
     else if (a >= FRESH) bad.push(n.name + " задерживается");
   });
   const s = $("#sum");
-  if (!Object.keys(seen).length){ s.textContent = "Жду первые данные"; s.className = "sum"; }
+  const have = NODES.filter(n => ageOf(seen[n.id], now)).length;
+  if (!have){ s.textContent = "Жду первые данные"; s.className = "sum"; }
   else if (bad.length){ s.textContent = bad.join(", "); s.className = "sum bad"; }
-  else { s.textContent = NODES.every(n => seen[n.id]) ? "Обе точки на связи" : "Одна точка на связи"; s.className = "sum"; }
+  else { s.textContent = have === NODES.length ? "Обе точки на связи" : "Одна точка на связи"; s.className = "sum"; }
 }
 
 function setBusy(id, on){ refs[id].chips.forEach(ch => {
