@@ -164,7 +164,7 @@ const API  = "https://cloud-api.yandex.net/v1/disk/resources";
 const HUB  = "app:/hub";
 const NODES = [ {id:"r1", name:"Брод"}, {id:"r2", name:"Алепино"} ];
 const ACTIONS = [
-  {label:"Статус",      cmd:"vpnctl status", t:60,  pri:true},
+  {label:"Статус",      cmd:"__status__",    t:60,  pri:true},
   {label:"Диагностика", cmd:"vpnctl doctor", t:180},
   {label:"Автоподбор",  cmd:"vpnctl auto",   t:300},
   {label:"Скорость",    cmd:"vpn-bench2",    t:180},
@@ -257,7 +257,7 @@ function paint(items){
     const ipm = tun.match(/ip:\s*([\d.]+)/i); r.ip.textContent = okT && ipm ? ipm[1] : "";
     r.cfg.textContent = (line(txt, "активный конфиг") || "—").replace(/\.json$/, "");
     const nf = line(txt, "неудач"); r.nfv.textContent = nf || "—"; r.nf.classList.toggle("warn", nf !== "" && nf !== "0");
-    r.up.textContent = upfmt(st.up);
+    r.up.textContent = upfmt(st.up || bt.up);
     r.raw.textContent = txt || "статус ещё не пришёл";
     r.clock.textContent = st.t
       ? "статус собран в " + st.t.slice(11) + (st.took ? " за " + st.took + " с" : "")
