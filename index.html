@@ -328,7 +328,7 @@ function closeSheet(){ $("#veil").classList.remove("show"); $("#sheet").classLis
 function showWait(){ $("#sb").innerHTML = '<div class="state"><span class="sp"></span>Выполняю на роутере…</div>'; }
 function showResult(o){
   $("#sb").innerHTML = `<div class="state ${o.rc ? "bad" : "ok"}">${o.rc ? "Завершилось с ошибкой, код " + esc(o.rc) : "Готово"}
-    <span style="color:var(--faint);font-weight:500">${o.took ? "за " + esc(o.took) + " с" : ""} ${esc((o.t||"").slice(11))}</span></div><pre>${esc(o.txt || "(пустой вывод)")}</pre>`;
+    <span style="color:var(--faint);font-weight:500">${o.lag != null ? "дошла за " + esc(o.lag) + " с, " : ""}${o.took ? "выполнилась за " + esc(o.took) + " с" : ""}</span></div><pre>${esc(o.txt || "(пустой вывод)")}</pre>`;
 }
 function openFree(n){
   openSheet(n, "");
