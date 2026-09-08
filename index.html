@@ -242,11 +242,14 @@ function paint(items){
   items.forEach(i => { map[i.name] = i.custom_properties || {}; mod[i.name] = i.modified ? Date.parse(i.modified) : null; });
   const now = Date.now();
   NODES.forEach(n => {
-    const r = refs[n.id], st = map[n.id+"-status"] || {}, out = map[n.id+"-out"] || {};
+    const r = refs[n.id], st = map[n.id+"-status"] || {}, out = map[n.id+"-out"] || {}, bt = map[n.id+"-beat"] || {};
     const txt = st.txt || "";
-    const tR = parseT(st.t);
+    const beat = !!bt.t;
+    const tR = parseT(beat ? bt.t : st.t);
+    const mR = beat ? mod[n.id+"-beat"] : mod[n.id+"-status"];
     const prev = seen[n.id];
-    seen[n.id] = { txt, t: tR, mod: mod[n.id+"-status"], at: (prev && prev.txt === txt && prev.t === tR) ? prev.at : now };
+    seen[n.id] = { txt, t: tR, mod: mR, beat, statusT: st.t, took: st.took,
+                   at: (prev && prev.t === tR && prev.txt === txt) ? prev.at : now };
     const tun = line(txt, "туннель");
     const okT = /^ok/i.test(tun);
     r.tun.className = "tun " + (tun ? (okT ? "ok" : "bad") : "");
@@ -256,7 +259,9 @@ function paint(items){
     const nf = line(txt, "неудач"); r.nfv.textContent = nf || "—"; r.nf.classList.toggle("warn", nf !== "" && nf !== "0");
     r.up.textContent = upfmt(st.up);
     r.raw.textContent = txt || "статус ещё не пришёл";
-    r.clock.textContent = st.t ? "последний отчёт " + st.t.slice(11) : "";
+    r.clock.textContent = st.t
+      ? "статус собран в " + st.t.slice(11) + (st.took ? " за " + st.took + " с" : "")
+      : "";
     if (out.txt){ outs[n.id] = out; }
     if (waiting[n.id] && String(out.id) === String(waiting[n.id].id)){
       delete waiting[n.id]; setBusy(n.id, false);
@@ -323,7 +328,7 @@ function closeSheet(){ $("#veil").classList.remove("show"); $("#sheet").classLis
 function showWait(){ $("#sb").innerHTML = '<div class="state"><span class="sp"></span>Выполняю на роутере…</div>'; }
 function showResult(o){
   $("#sb").innerHTML = `<div class="state ${o.rc ? "bad" : "ok"}">${o.rc ? "Завершилось с ошибкой, код " + esc(o.rc) : "Готово"}
-    <span style="color:var(--faint);font-weight:500">${esc(o.t||"")}</span></div><pre>${esc(o.txt || "(пустой вывод)")}</pre>`;
+    <span style="color:var(--faint);font-weight:500">${o.took ? "за " + esc(o.took) + " с" : ""} ${esc((o.t||"").slice(11))}</span></div><pre>${esc(o.txt || "(пустой вывод)")}</pre>`;
 }
 function openFree(n){
   openSheet(n, "");
@@ -364,9 +369,9 @@ function load(){
 }
 function tick(){
   const fast = Date.now() < turbo || Object.keys(waiting).length > 0;
-  $("#pollt").textContent = fast ? "2 с" : "5 с";
+  $("#pollt").textContent = fast ? "1 с" : "5 с";
   load();
-  clearTimeout(tick._t); tick._t = setTimeout(tick, fast ? 2000 : 5000);
+  clearTimeout(tick._t); tick._t = setTimeout(tick, fast ? 1200 : 5000);
 }
 setInterval(tickAges, 1000);
 
