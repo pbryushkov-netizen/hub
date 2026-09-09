@@ -180,6 +180,9 @@ const FRESH = 75, STALE = 300, C = 176;
 let token = "";
 try { token = localStorage.getItem("hubtok") || ""; } catch(e) {}
 const seen = {}, outs = {}, waiting = {}, refs = {};
+let OBS = {};
+try { OBS = JSON.parse(localStorage.getItem("hubobs") || "{}"); } catch(e) { OBS = {}; }
+function saveObs(){ try { localStorage.setItem("hubobs", JSON.stringify(OBS)); } catch(e) {} }
 let turbo = 0, sheetNode = null, sheetId = null;
 
 const $ = s => document.querySelector(s);
@@ -251,9 +254,15 @@ function paint(items){
     const txt = st.txt || "";
     const tR = parseT(st.t), mR = mod[n.id+"-status"];
     const bR = parseT(bt.t), bM = mod[n.id+"-beat"];
-    const prev = seen[n.id];
-    seen[n.id] = { txt, t: tR, mod: mR, at: (prev && prev.t === tR && prev.txt === txt) ? prev.at : now,
-                   beat: bt.t ? { txt: "x", t: bR, mod: bM, at: (prev && prev.beat && prev.beat.t === bR) ? prev.beat.at : now } : null,
+    // момент изменения фиксируется только когда данные реально сменились относительно уже виденных
+    const key = (st.t || "") + "|" + txt.length;
+    let ob = OBS[n.id];
+    if (!ob || ob.key !== key){ ob = { key, at: ob ? now : null }; OBS[n.id] = ob; saveObs(); }
+    const bkey = bt.t || "";
+    let bo = OBS["b" + n.id];
+    if (!bo || bo.key !== bkey){ bo = { key: bkey, at: bo ? now : null }; OBS["b" + n.id] = bo; saveObs(); }
+    seen[n.id] = { txt, t: tR, mod: mR, at: ob.at,
+                   beat: bt.t ? { txt: "x", t: bR, mod: bM, at: bo.at } : null,
                    bt };
     const tun = line(txt, "туннель");
     const okT = /^ok/i.test(tun);
@@ -262,7 +271,7 @@ function paint(items){
     const ipm = tun.match(/ip:\s*([\d.]+)/i); r.ip.textContent = okT && ipm ? ipm[1] : "";
     r.cfg.textContent = (line(txt, "активный конфиг") || "—").replace(/\.json$/, "");
     const nf = line(txt, "неудач"); r.nfv.textContent = nf || "—"; r.nf.classList.toggle("warn", nf !== "" && nf !== "0");
-    r.up.textContent = upfmt(st.up || bt.up);
+    r.up.textContent = upfmt(bt.up || st.up);
     r.raw.textContent = txt || "статус ещё не пришёл";
     r.clock.textContent = st.t
       ? "статус собран в " + st.t.slice(11) + (st.took ? " за " + st.took + " с" : "")
@@ -284,12 +293,13 @@ function ageOf(s, now){
   if (!s || !s.txt) return null;
   const aT = s.t ? (now - s.t)/1000 : null;          // по часам роутера
   const aM = s.mod ? (now - s.mod)/1000 : null;       // по метке Диска
-  const aO = (now - s.at)/1000;                       // с момента, когда данные последний раз менялись здесь
+  const aO = s.at ? (now - s.at)/1000 : null;         // с момента, когда данные последний раз сменились на глазах
   let a;
   if (aT !== null && aT >= -180) a = aM !== null ? Math.min(aT, aM) : aT;
   else if (aM !== null) a = aM;                       // часы роутера убежали вперёд
   else a = aO;
-  if (a > STALE && aO < 90) a = aO;                   // данные только что менялись — часы врут, не паникуем
+  if (a === null) return null;
+  if (aO !== null && a > STALE && aO < 90) a = aO;    // данные только что реально сменились — часы врут
   const skew = aT !== null && (aT < -180 || (aM !== null && aT - aM > 600));
   return {a: Math.max(0, a), skew};
 }
@@ -303,11 +313,16 @@ function tickAges(){
     const gb = s ? ageOf(s.beat, now) : null;
     const alive = !!(gb && gb.a < 60);
     const bt = (s && s.bt) || {};
-    let agent = s ? (alive ? "агент жив, пульс " + ago(gb.a) + " назад" : "пульса нет") : "";
-    if (bt.v) agent += ", v" + bt.v;
-    if (bt.err) agent += ". " + bt.err;
+    let agent = s ? (alive ? "агент отвечает, пульс " + ago(gb.a) + " назад" : "пульса нет") : "";
+    let warn = !alive;
+    if (bt.v){
+      agent += ", v" + bt.v;
+      if (bt.sage > 120){ agent += ". Статус не собирается " + ago(bt.sage); warn = true; }
+      if (bt.cage > 60){ agent += ". Команды не забирает " + ago(bt.cage); warn = true; }
+      if (bt.err){ agent += ". " + bt.err; warn = true; }
+    } else if (alive){ agent += ", старая версия без самоконтроля"; }
     r.agent.textContent = agent;
-    r.agent.className = "clock agent " + (alive ? "" : "warnt");
+    r.agent.className = "clock agent " + (warn ? "warnt" : "");
     if (!g){
       r.age.textContent = "—"; r.fg.style.stroke = "var(--faint)"; r.fg.style.strokeDashoffset = C;
       if (alive) bad.push(n.name + " жив, но статуса ещё нет");
@@ -318,6 +333,11 @@ function tickAges(){
     const col = a < FRESH ? "var(--ok)" : a < STALE ? "var(--warn)" : "var(--bad)";
     r.fg.style.stroke = col;
     r.fg.style.strokeDashoffset = a < FRESH ? C * (a / FRESH) : a < STALE ? C * 0.92 : C;
+    if (a >= STALE){
+      r.tun.className = "tun";
+      r.tt.textContent = "туннель неизвестен, статус " + ago(a) + " назад";
+      r.ip.textContent = "";
+    }
     if (g.skew) r.clock.textContent = "часы роутера сбиты, статус от " + (s.t ? new Date(s.t).toLocaleTimeString("ru-RU") : "—");
     if (a >= STALE) bad.push(n.name + (alive ? " жив, но статус не собирается " : " молчит ") + ago(a));
     else if (a >= FRESH) bad.push(n.name + " задерживается");
