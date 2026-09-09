@@ -147,7 +147,8 @@
     <button id="save">Подключиться</button>
   </div>
   <div id="board"></div>
-  <footer id="foot" hidden><a href="#" id="forget">Сменить токен</a></footer>
+  <footer id="foot" hidden><a href="#" id="upload">Загрузить файл на Диск</a> &nbsp;&nbsp;&nbsp; <a href="#" id="forget">Сменить токен</a></footer>
+  <input type="file" id="fin" hidden>
 </main>
 
 <div class="toast" id="toast"></div>
@@ -165,7 +166,7 @@
 const API  = "https://cloud-api.yandex.net/v1/disk/resources";
 const HUB  = "app:/hub";
 const NODES = [ {id:"r1", name:"Брод"}, {id:"r2", name:"Алепино"} ];
-const UPD = "vpn-hubget app:/vpn-hub.py /opt/bin/vpn-hub.py && python3 -m py_compile /opt/bin/vpn-hub.py && md5sum /opt/bin/vpn-hub.py && { (sleep 3; /opt/etc/init.d/S87vpnhub restart) >/dev/null 2>&1 & }";
+const UPD = "vpn-hubget vpn-hub.py /opt/bin/vpn-hub.py && python3 -m py_compile /opt/bin/vpn-hub.py && md5sum /opt/bin/vpn-hub.py && { (sleep 3; /opt/etc/init.d/S87vpnhub restart) >/dev/null 2>&1 & }";
 const ACTIONS = [
   {label:"Статус",         cmd:"__status__",    t:60,  pri:true},
   {label:"Диагностика",    cmd:"vpnctl doctor", t:180},
@@ -202,6 +203,7 @@ function api(method, path, body){
   if (body){ o.headers["Content-Type"] = "application/json"; o.body = JSON.stringify(body); }
   return fetch(u, o).then(r => {
     if (r.status === 401) throw new Error("Диск не принял токен. Проверь его или получи заново.");
+    if (method === "PUT" && r.status === 409) return {};
     if (!r.ok) throw new Error("Диск ответил " + r.status);
     return r.status === 204 ? {} : r.json();
   });
@@ -417,6 +419,42 @@ $("#save").onclick = () => { const v = $("#tok").value.trim(); if (!v) return; t
 $("#forget").onclick = e => { e.preventDefault(); token = ""; try { localStorage.removeItem("hubtok"); } catch(e) {}
   for (const k in refs) delete refs[k]; load(); };
 $("#sh-x").onclick = closeSheet; $("#veil").onclick = closeSheet;
+
+async function uploadFile(file){
+  const enc = new TextEncoder();
+  const text = await file.text();
+  const chunks = []; let cur = "";
+  for (const ch of text){
+    if (enc.encode(cur + ch).length > 700){ chunks.push(cur); cur = ""; }
+    cur += ch;
+  }
+  if (cur) chunks.push(cur);
+  const dig = await crypto.subtle.digest("SHA-256", enc.encode(text));
+  const sha = [...new Uint8Array(dig)].map(b => b.toString(16).padStart(2, "0")).join("");
+  const base = HUB + "/files/" + file.name;
+  const body = $("#sb");
+  const step = (m) => body.innerHTML = `<div class="state"><span class="sp"></span>${esc(m)}</div>`;
+  step("Готовлю папки");
+  await api("PUT", HUB + "/files"); await api("PUT", base);
+  for (let i = 0; i < chunks.length; i++){
+    const p = base + "/c" + String(i).padStart(3, "0");
+    await api("PUT", p);
+    await api("PATCH", p, {custom_properties:{d: chunks[i]}});
+    step("Кусок " + (i + 1) + " из " + chunks.length);
+  }
+  await api("PATCH", base, {custom_properties:{sha, n: chunks.length, size: enc.encode(text).length}});
+  body.innerHTML = `<div class="state ok">Загружено</div><pre>${esc(file.name)}: ${enc.encode(text).length} байт, ${chunks.length} кусков
+sha256 ${sha.slice(0, 16)}…
+
+Теперь на каждой точке нажми «Обновить агента».</pre>`;
+}
+$("#upload").onclick = e => { e.preventDefault(); $("#fin").value = ""; $("#fin").click(); };
+$("#fin").onchange = () => {
+  const f = $("#fin").files[0]; if (!f) return;
+  sheetNode = "__up__"; $("#sh-t").textContent = "Загрузка на Диск"; $("#sh-c").textContent = f.name;
+  $("#veil").classList.add("show"); $("#sheet").classList.add("show");
+  uploadFile(f).catch(e => { $("#sb").innerHTML = `<div class="state bad">${esc(e.message)}</div>`; });
+};
 tick();
 </script>
 </body>
