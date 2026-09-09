@@ -85,7 +85,9 @@
   details[open] summary:before{transform:rotate(45deg)}
   pre{margin:6px 0 0;padding:12px;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06);border-radius:14px;
       font-family:var(--mono);font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word;color:#C9D2EA}
-  .clock{font-size:11.5px;color:var(--faint);margin-top:8px;font-weight:500}
+  .clock{font-size:11.5px;color:var(--faint);margin:8px 0 0;font-weight:500}
+  .clock.agent{margin-top:3px}
+  .clock.warnt{color:var(--warn)}
 
   .gate{max-width:420px;margin:12vh auto 0;background:var(--card);border:1px solid var(--card-b);border-radius:24px;padding:26px 22px}
   .gate h2{margin:0 0 6px;font-size:22px;font-weight:800;letter-spacing:-.02em}
@@ -163,13 +165,15 @@
 const API  = "https://cloud-api.yandex.net/v1/disk/resources";
 const HUB  = "app:/hub";
 const NODES = [ {id:"r1", name:"Брод"}, {id:"r2", name:"Алепино"} ];
+const UPD = "vpn-hubget app:/vpn-hub.py /opt/bin/vpn-hub.py && python3 -m py_compile /opt/bin/vpn-hub.py && md5sum /opt/bin/vpn-hub.py && { (sleep 3; /opt/etc/init.d/S87vpnhub restart) >/dev/null 2>&1 & }";
 const ACTIONS = [
-  {label:"Статус",      cmd:"__status__",    t:60,  pri:true},
-  {label:"Диагностика", cmd:"vpnctl doctor", t:180},
-  {label:"Автоподбор",  cmd:"vpnctl auto",   t:300},
-  {label:"Скорость",    cmd:"vpn-bench2",    t:180},
-  {label:"Аптайм",      cmd:"vpn-uptime",    t:60},
-  {label:"Команда…",    free:true}
+  {label:"Статус",         cmd:"__status__",    t:60,  pri:true},
+  {label:"Диагностика",    cmd:"vpnctl doctor", t:180},
+  {label:"Автоподбор",     cmd:"vpnctl auto",   t:300},
+  {label:"Скорость",       cmd:"vpn-bench2",    t:180},
+  {label:"Лог агента",     cmd:"tail -n 15 /opt/var/log/vpn-hub.log", t:30},
+  {label:"Обновить агента", cmd:UPD, t:120},
+  {label:"Команда…",       free:true}
 ];
 const FRESH = 75, STALE = 300, C = 176;
 
@@ -222,17 +226,18 @@ function build(){
       </div>
       <div class="acts">${ACTIONS.map((a,i) => `<button class="chip${a.pri?" pri":""}" data-i="${i}">${esc(a.label)}</button>`).join("")}</div>
       <details><summary>Полный статус</summary><pre class="raw">статус ещё не пришёл</pre></details>
-      <p class="clock"></p>`;
+      <p class="clock"></p>
+      <p class="clock agent"></p>`;
     b.appendChild(el);
     refs[n.id] = {
       el, fg: el.querySelector(".fgc"), age: el.querySelector(".age span"), tun: el.querySelector(".tun"),
       tt: el.querySelector(".tt"), ip: el.querySelector(".ip"), cfg: el.querySelector(".cfg"),
       nf: el.querySelector(".nf"), nfv: el.querySelector(".nfv"), up: el.querySelector(".up"),
-      raw: el.querySelector(".raw"), clock: el.querySelector(".clock"), chips: [...el.querySelectorAll(".chip")]
+      raw: el.querySelector(".raw"), clock: el.querySelector(".clock"), agent: el.querySelector(".agent"), chips: [...el.querySelectorAll(".chip")]
     };
     refs[n.id].chips.forEach(ch => ch.onclick = () => {
       const a = ACTIONS[+ch.dataset.i];
-      a.free ? openFree(n) : send(n, a.cmd, a.t);
+      a.free ? openFree(n) : send(n, a.cmd, a.t, a.label);
     });
   });
 }
@@ -244,12 +249,12 @@ function paint(items){
   NODES.forEach(n => {
     const r = refs[n.id], st = map[n.id+"-status"] || {}, out = map[n.id+"-out"] || {}, bt = map[n.id+"-beat"] || {};
     const txt = st.txt || "";
-    const beat = !!bt.t;
-    const tR = parseT(beat ? bt.t : st.t);
-    const mR = beat ? mod[n.id+"-beat"] : mod[n.id+"-status"];
+    const tR = parseT(st.t), mR = mod[n.id+"-status"];
+    const bR = parseT(bt.t), bM = mod[n.id+"-beat"];
     const prev = seen[n.id];
-    seen[n.id] = { txt, t: tR, mod: mR, beat, statusT: st.t, took: st.took,
-                   at: (prev && prev.t === tR && prev.txt === txt) ? prev.at : now };
+    seen[n.id] = { txt, t: tR, mod: mR, at: (prev && prev.t === tR && prev.txt === txt) ? prev.at : now,
+                   beat: bt.t ? { txt: "x", t: bR, mod: bM, at: (prev && prev.beat && prev.beat.t === bR) ? prev.beat.at : now } : null,
+                   bt };
     const tun = line(txt, "туннель");
     const okT = /^ok/i.test(tun);
     r.tun.className = "tun " + (tun ? (okT ? "ok" : "bad") : "");
@@ -261,7 +266,7 @@ function paint(items){
     r.raw.textContent = txt || "статус ещё не пришёл";
     r.clock.textContent = st.t
       ? "статус собран в " + st.t.slice(11) + (st.took ? " за " + st.took + " с" : "")
-      : "";
+      : "статус ещё не собирался";
     if (out.txt){ outs[n.id] = out; }
     if (waiting[n.id] && String(out.id) === String(waiting[n.id].id)){
       delete waiting[n.id]; setBusy(n.id, false);
@@ -295,18 +300,30 @@ function tickAges(){
     const r = refs[n.id]; if (!r) return;
     const s = seen[n.id];
     const g = ageOf(s, now);
-    if (!g){ r.age.textContent = "—"; r.fg.style.stroke = "var(--faint)"; r.fg.style.strokeDashoffset = C; return; }
+    const gb = s ? ageOf(s.beat, now) : null;
+    const alive = !!(gb && gb.a < 60);
+    const bt = (s && s.bt) || {};
+    let agent = s ? (alive ? "агент жив, пульс " + ago(gb.a) + " назад" : "пульса нет") : "";
+    if (bt.v) agent += ", v" + bt.v;
+    if (bt.err) agent += ". " + bt.err;
+    r.agent.textContent = agent;
+    r.agent.className = "clock agent " + (alive ? "" : "warnt");
+    if (!g){
+      r.age.textContent = "—"; r.fg.style.stroke = "var(--faint)"; r.fg.style.strokeDashoffset = C;
+      if (alive) bad.push(n.name + " жив, но статуса ещё нет");
+      return;
+    }
     const a = g.a;
     r.age.textContent = ago(a);
     const col = a < FRESH ? "var(--ok)" : a < STALE ? "var(--warn)" : "var(--bad)";
     r.fg.style.stroke = col;
     r.fg.style.strokeDashoffset = a < FRESH ? C * (a / FRESH) : a < STALE ? C * 0.92 : C;
-    if (g.skew) r.clock.textContent = "часы роутера сбиты, последний отчёт " + (s.t ? new Date(s.t).toLocaleTimeString("ru-RU") : "—");
-    if (a >= STALE) bad.push(n.name + " молчит " + ago(a));
+    if (g.skew) r.clock.textContent = "часы роутера сбиты, статус от " + (s.t ? new Date(s.t).toLocaleTimeString("ru-RU") : "—");
+    if (a >= STALE) bad.push(n.name + (alive ? " жив, но статус не собирается " : " молчит ") + ago(a));
     else if (a >= FRESH) bad.push(n.name + " задерживается");
   });
   const s = $("#sum");
-  const have = NODES.filter(n => ageOf(seen[n.id], now)).length;
+  const have = NODES.filter(n => seen[n.id] && (ageOf(seen[n.id], now) || ageOf(seen[n.id].beat, now))).length;
   if (!have){ s.textContent = "Жду первые данные"; s.className = "sum"; }
   else if (bad.length){ s.textContent = bad.join(", "); s.className = "sum bad"; }
   else { s.textContent = have === NODES.length ? "Обе точки на связи" : "Одна точка на связи"; s.className = "sum"; }
@@ -339,10 +356,10 @@ function openFree(n){
   setTimeout(() => $("#fi").focus(), 300);
 }
 
-function send(n, cmd, t){
+function send(n, cmd, t, label){
   const id = Date.now();
   waiting[n.id] = {id, cmd}; sheetId = id;
-  setBusy(n.id, true); openSheet(n, cmd); showWait();
+  setBusy(n.id, true); openSheet(n, label || cmd); showWait();
   api("PATCH", HUB + "/" + n.id + "-cmd", {custom_properties:{id, cmd, t}})
     .then(() => { turbo = Date.now() + 240000; tick(); })
     .catch(e => { delete waiting[n.id]; setBusy(n.id, false); $("#sb").innerHTML = `<div class="state bad">${esc(e.message)}</div>`; });
