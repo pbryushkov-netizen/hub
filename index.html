@@ -72,6 +72,7 @@
         padding:10px 15px;cursor:pointer;display:flex;align-items:center;gap:7px;transition:background .15s,transform .1s}
   .chip:active{transform:scale(.97)}
   .chip.pri{background:var(--accent);border-color:transparent;color:#fff}
+  .chip.stop{background:rgba(255,107,107,.18);border-color:rgba(255,107,107,.35);color:#FFB3B3}
   .chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .chip:disabled{opacity:.5;cursor:default}
   .chip .sp{width:12px;height:12px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
@@ -174,8 +175,10 @@ const ACTIONS = [
   {label:"Скорость",       cmd:"vpn-bench2",    t:180},
   {label:"Лог агента",     cmd:"tail -n 15 /opt/var/log/vpn-hub.log", t:30},
   {label:"Обновить агента", cmd:UPD, t:120},
-  {label:"Команда…",       free:true}
+  {label:"Команда…",       free:true},
+  {label:"Стоп",           cmd:"__kill__", t:10, stop:true}
 ];
+const LBL = {}; ACTIONS.forEach(a => { if (a.cmd) LBL[a.cmd] = a.label; });
 const FRESH = 75, STALE = 300, C = 176;
 
 let token = "";
@@ -229,8 +232,9 @@ function build(){
         <div class="st nf"><b>Неудач</b><span class="nfv">—</span></div>
         <div class="st"><b>Аптайм</b><span class="up">—</span></div>
       </div>
-      <div class="acts">${ACTIONS.map((a,i) => `<button class="chip${a.pri?" pri":""}" data-i="${i}">${esc(a.label)}</button>`).join("")}</div>
+      <div class="acts">${ACTIONS.map((a,i) => `<button class="chip${a.pri?" pri":""}${a.stop?" stop":""}" data-i="${i}"${a.stop?" hidden":""}>${esc(a.label)}</button>`).join("")}</div>
       <details><summary>Полный статус</summary><pre class="raw">статус ещё не пришёл</pre></details>
+      <details><summary>События</summary><pre class="ev">пока пусто</pre></details>
       <p class="clock"></p>
       <p class="clock agent"></p>`;
     b.appendChild(el);
@@ -238,7 +242,8 @@ function build(){
       el, fg: el.querySelector(".fgc"), age: el.querySelector(".age span"), tun: el.querySelector(".tun"),
       tt: el.querySelector(".tt"), ip: el.querySelector(".ip"), cfg: el.querySelector(".cfg"),
       nf: el.querySelector(".nf"), nfv: el.querySelector(".nfv"), up: el.querySelector(".up"),
-      raw: el.querySelector(".raw"), clock: el.querySelector(".clock"), agent: el.querySelector(".agent"), chips: [...el.querySelectorAll(".chip")]
+      raw: el.querySelector(".raw"), ev: el.querySelector(".ev"), clock: el.querySelector(".clock"), agent: el.querySelector(".agent"),
+      chips: [...el.querySelectorAll(".chip")], stop: el.querySelector(".chip.stop")
     };
     refs[n.id].chips.forEach(ch => ch.onclick = () => {
       const a = ACTIONS[+ch.dataset.i];
@@ -275,6 +280,11 @@ function paint(items){
     const nf = line(txt, "неудач"); r.nfv.textContent = nf || "—"; r.nf.classList.toggle("warn", nf !== "" && nf !== "0");
     r.up.textContent = upfmt(bt.up || st.up);
     r.raw.textContent = txt || "статус ещё не пришёл";
+    try {
+      const ev = JSON.parse((map[n.id+"-events"] || {}).list || "[]");
+      r.ev.textContent = ev.length ? ev.slice().reverse().map(e => e.t + "  " + e.e).join("\n") : "пока пусто";
+    } catch(e) {}
+    r.stop.hidden = !bt.busy;
     r.clock.textContent = st.t
       ? "статус собран в " + st.t.slice(11) + (st.took ? " за " + st.took + " с" : "")
       : "статус ещё не собирался";
@@ -319,8 +329,9 @@ function tickAges(){
     let warn = !alive;
     if (bt.v){
       agent += ", v" + bt.v;
+      if (bt.busy){ agent += ". Выполняет: " + (LBL[bt.busy] || bt.busy) + " уже " + ago(bt.bsince || 0); }
       if (bt.sage > 120){ agent += ". Статус не собирается " + ago(bt.sage); warn = true; }
-      if (bt.cage > 60){ agent += ". Команды не забирает " + ago(bt.cage); warn = true; }
+      if (bt.cage > 60 && !bt.busy){ agent += ". Не выходит на связь за командами " + ago(bt.cage); warn = true; }
       if (bt.err){ agent += ". " + bt.err; warn = true; }
     } else if (alive){ agent += ", старая версия без самоконтроля"; }
     r.agent.textContent = agent;
@@ -352,9 +363,10 @@ function tickAges(){
 }
 
 function setBusy(id, on){ refs[id].chips.forEach(ch => {
-  if (ACTIONS[+ch.dataset.i].free) return;
-  ch.disabled = on;
-  if (on && !ch.querySelector(".sp") && ACTIONS[+ch.dataset.i].cmd === (waiting[id]||{}).cmd) ch.insertAdjacentHTML("afterbegin", '<span class="sp"></span>');
+  const a = ACTIONS[+ch.dataset.i];
+  if (a.free || a.stop) return;
+  const mine = a.cmd === (waiting[id]||{}).cmd;
+  if (on && mine && !ch.querySelector(".sp")) ch.insertAdjacentHTML("afterbegin", '<span class="sp"></span>');
   if (!on) ch.querySelectorAll(".sp").forEach(x => x.remove());
 }); }
 
@@ -385,8 +397,9 @@ function send(n, cmd, t, label){
   api("PATCH", HUB + "/" + n.id + "-cmd", {custom_properties:{id, cmd, t}})
     .then(() => { turbo = Date.now() + 240000; tick(); })
     .catch(e => { delete waiting[n.id]; setBusy(n.id, false); $("#sb").innerHTML = `<div class="state bad">${esc(e.message)}</div>`; });
+  const lim = ((t || 120) + 40) * 1000;
   setTimeout(() => { if (waiting[n.id] && waiting[n.id].id === id){ delete waiting[n.id]; setBusy(n.id, false);
-    if (sheetNode === n.id && sheetId === id) $("#sb").innerHTML = '<div class="state bad">Ответа нет 5 минут. Роутер не забрал команду или не смог ответить.</div>'; } }, 300000);
+    if (sheetNode === n.id && sheetId === id) $("#sb").innerHTML = '<div class="state bad">Ответа нет ' + Math.round(lim/60000) + ' мин. Роутер не забрал команду или не смог ответить.</div>'; } }, lim);
 }
 
 function toast(msg){ const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 6000); }
