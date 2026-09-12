@@ -172,7 +172,7 @@ const UPD = "vpn-hubget vpn-hub.py /opt/bin/vpn-hub.py && python3 -m py_compile 
 const ACTIONS = [
   {label:"Статус",         cmd:"__status__",    t:60,  pri:true},
   {label:"Диагностика",    cmd:"vpnctl doctor", t:180},
-  {label:"Автоподбор",     cmd:"vpnctl auto",   t:300},
+  {label:"Автоподбор",     cmd:"vpnctl auto",   t:900},
   {label:"Скорость",       cmd:"vpn-bench2",    t:180},
   {label:"Лог агента",     cmd:"tail -n 15 /opt/var/log/vpn-hub.log", t:30},
   {label:"Обновить агента", cmd:UPD, t:120},
